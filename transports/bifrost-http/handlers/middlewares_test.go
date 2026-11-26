@@ -4545,6 +4545,51 @@ func TestTransportInterceptorMiddlewareTransfersTrustedPhysicalSendStateToCore(t
 	}
 }
 
+func TestTransportInterceptorRequiresPhysicalSendPlugin(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		required string
+		plugins  []schemas.HTTPTransportPlugin
+		wantNext bool
+	}{
+		{name: "opt-out preserves behavior", wantNext: true},
+		{name: "missing", required: "physical-send-state-plugin"},
+		{name: "other plugin", required: "physical-send-state-plugin", plugins: []schemas.HTTPTransportPlugin{&fakeBodyPlugin{}}},
+		{name: "present without guard", required: "body-plugin", plugins: []schemas.HTTPTransportPlugin{&fakeBodyPlugin{}}},
+		{name: "present with guard", required: "physical-send-state-plugin", plugins: []schemas.HTTPTransportPlugin{&physicalSendStatePlugin{}}, wantNext: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BIFROST_REQUIRED_PHYSICAL_SEND_PLUGIN", tc.required)
+			config := preAuthTestConfig(tc.plugins...)
+			called := false
+			handler := TransportInterceptorMiddleware(config)(func(*fasthttp.RequestCtx) { called = true })
+			ctx := preAuthTestCtx()
+			handler(ctx)
+			if called != tc.wantNext {
+				t.Fatalf("next called = %v, want %v", called, tc.wantNext)
+			}
+			if !tc.wantNext && ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+				t.Fatalf("missing required guard status = %d", ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
+func TestTransportInterceptorFailsClosedAfterPluginRemoval(t *testing.T) {
+	t.Setenv("BIFROST_REQUIRED_PHYSICAL_SEND_PLUGIN", "physical-send-state-plugin")
+	config := preAuthTestConfig(&physicalSendStatePlugin{})
+	calls := 0
+	handler := TransportInterceptorMiddleware(config)(func(*fasthttp.RequestCtx) { calls++ })
+	handler(preAuthTestCtx())
+	empty := []schemas.HTTPTransportPlugin{}
+	config.HTTPTransportPlugins.Store(&empty)
+	ctx := preAuthTestCtx()
+	handler(ctx)
+	if calls != 1 || ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+		t.Fatal("plugin removal allowed an unguarded request")
+	}
+}
+
 // bodyTestPhases runs a body test through both transport phases that expose the request body.
 var bodyTestPhases = []struct {
 	name       string

@@ -231,6 +231,17 @@ func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
 	}
 	// Sort all plugins by placement group and order
 	s.Config.SortAndRebuildPlugins()
+	if name := lib.RequiredPhysicalSendPlugin(); name != "" {
+		httpLoaded := slices.ContainsFunc(s.Config.GetLoadedHTTPTransportPlugins(), func(plugin schemas.HTTPTransportPlugin) bool {
+			return plugin.GetName() == name
+		})
+		llmLoaded := slices.ContainsFunc(s.Config.GetLoadedLLMPlugins(), func(plugin schemas.LLMPlugin) bool {
+			return plugin.GetName() == name
+		})
+		if !httpLoaded || !llmLoaded {
+			return fmt.Errorf("required physical-send plugin %q must be loaded for HTTP and LLM hooks", name)
+		}
+	}
 	return nil
 }
 

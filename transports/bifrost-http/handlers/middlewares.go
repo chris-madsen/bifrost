@@ -1106,6 +1106,13 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			plugins := config.GetLoadedHTTPTransportPlugins()
+			required := lib.RequiredPhysicalSendPlugin()
+			if required != "" && !slices.ContainsFunc(plugins, func(plugin schemas.HTTPTransportPlugin) bool {
+				return plugin.GetName() == required
+			}) {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send plugin is unavailable")
+				return
+			}
 			if len(plugins) == 0 {
 				next(ctx)
 				return
@@ -1159,6 +1166,16 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// Adding user values
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
+			}
+			// Catalog and health reads do not create model generations.
+			// All other requests must carry an installed physical-send guard.
+			if required != "" && !ctx.IsGet() && !ctx.IsHead() {
+				guard, ok := bifrostCtx.PhysicalSendGuard()
+				if !ok || guard.Authorize == nil {
+					SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send guard is unavailable")
+					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
+					return
+				}
 			}
 			publishedPhysicalSendState := bifrostCtx.PublishPhysicalSendStateToParent()
 			if bifrostCtx.PhysicalSendGuardRequired() && !publishedPhysicalSendState {
