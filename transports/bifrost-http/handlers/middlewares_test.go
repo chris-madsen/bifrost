@@ -4284,6 +4284,13 @@ func (p *fakePreAuthPlugin) HTTPTransportStreamChunkHook(_ *schemas.BifrostConte
 func preAuthTestConfig(plugins ...schemas.HTTPTransportPlugin) *lib.Config {
 	config := &lib.Config{}
 	config.HTTPTransportPlugins.Store(&plugins)
+	llm := []schemas.LLMPlugin{}
+	for _, p := range plugins {
+		if plugin, ok := p.(schemas.LLMPlugin); ok {
+			llm = append(llm, plugin)
+		}
+	}
+	config.LLMPlugins.Store(&llm)
 	return config
 }
 
@@ -4475,6 +4482,14 @@ func (p *fakeBodyPlugin) GetName() string { return "body-plugin" }
 
 func (p *fakeBodyPlugin) Cleanup() error { return nil }
 
+func (p *fakeBodyPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error { return nil }
+func (p *fakeBodyPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *fakeBodyPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
 func (p *fakeBodyPlugin) HTTPTransportPreAuthHook(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
 	if p.preAuth != nil {
 		p.preAuth(req)
@@ -4557,6 +4572,8 @@ func TestTransportInterceptorRequiresPhysicalSendPlugin(t *testing.T) {
 		{name: "other plugin", required: "physical-send-state-plugin", plugins: []schemas.HTTPTransportPlugin{&fakeBodyPlugin{}}},
 		{name: "present without guard", required: "body-plugin", plugins: []schemas.HTTPTransportPlugin{&fakeBodyPlugin{}}},
 		{name: "present with guard", required: "physical-send-state-plugin", plugins: []schemas.HTTPTransportPlugin{&physicalSendStatePlugin{}}, wantNext: true},
+		{name: "other plugin cannot substitute its guard", required: "body-plugin", plugins: []schemas.HTTPTransportPlugin{&physicalSendStatePlugin{}, &fakeBodyPlugin{}}},
+		{name: "later plugin cannot supply missing guard", required: "body-plugin", plugins: []schemas.HTTPTransportPlugin{&fakeBodyPlugin{}, &physicalSendStatePlugin{}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("BIFROST_REQUIRED_PHYSICAL_SEND_PLUGIN", tc.required)
@@ -4588,6 +4605,42 @@ func TestTransportInterceptorFailsClosedAfterPluginRemoval(t *testing.T) {
 	if calls != 1 || ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
 		t.Fatal("plugin removal allowed an unguarded request")
 	}
+}
+
+func TestTransportInterceptorRequiredGuardReadOnlyRoutes(t *testing.T) {
+	t.Setenv("BIFROST_REQUIRED_PHYSICAL_SEND_PLUGIN", "body-plugin")
+	for _, tc := range []struct {
+		path string
+		upgrade bool
+		wantNext bool
+	}{
+		{path: "/v1/models", wantNext: true},
+		{path: "/chatgpt_passthrough/backend-api/codex/models", wantNext: true},
+		{path: "/v1/responses"},
+		{path: "/chatgpt_passthrough/backend-api/codex/responses", upgrade: true},
+		{path: "/v1/models", upgrade: true},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			config := preAuthTestConfig(&fakeBodyPlugin{})
+			ctx := preAuthTestCtx()
+			ctx.Request.Header.SetMethod("GET")
+			ctx.Request.SetRequestURI(tc.path)
+			if tc.upgrade { ctx.Request.Header.Set("Upgrade", "websocket") }
+			called := false
+			TransportInterceptorMiddleware(config)(func(*fasthttp.RequestCtx) { called = true })(ctx)
+			if called != tc.wantNext { t.Fatalf("next called = %v, want %v", called, tc.wantNext) }
+		})
+	}
+}
+
+func TestTransportInterceptorRequiredGuardLLMRemoval(t *testing.T) {
+	t.Setenv("BIFROST_REQUIRED_PHYSICAL_SEND_PLUGIN", "physical-send-state-plugin")
+	config := preAuthTestConfig(&physicalSendStatePlugin{})
+	empty := []schemas.LLMPlugin{}
+	config.LLMPlugins.Store(&empty)
+	ctx := preAuthTestCtx()
+	TransportInterceptorMiddleware(config)(func(*fasthttp.RequestCtx) { t.Fatal("missing LLM hook passed") })(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable { t.Fatal("missing LLM hook not denied") }
 }
 
 // bodyTestPhases runs a body test through both transport phases that expose the request body.

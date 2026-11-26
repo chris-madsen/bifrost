@@ -1077,6 +1077,14 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
 				}
+				if needsGuard && pluginName == required {
+					guard, ok := bifrostCtx.PhysicalSendGuard()
+					if !ok || guard.Authorize == nil {
+						SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send plugin did not install its guard")
+						_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
+						return
+					}
+				}
 				// If we got here, the plugin may have modified req in-place
 			}
 			// Drain pre-auth plugin logs and store on fasthttp context for trace attachment
@@ -1099,6 +1107,19 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 	}
 }
 
+// requiredGuardReadOnly exempts only catalog and health reads, never upgrades.
+func requiredGuardReadOnly(ctx *fasthttp.RequestCtx) bool {
+	if (!ctx.IsGet() && !ctx.IsHead()) || len(ctx.Request.Header.Peek("Upgrade")) != 0 {
+		return false
+	}
+	switch string(ctx.Path()) {
+	case "/v1/models", "/health", "/healthz", "/readyz", "/chatgpt_passthrough/backend-api/codex/models":
+		return true
+	default:
+		return false
+	}
+}
+
 // TransportInterceptorMiddleware runs all plugin HTTP transport interceptors.
 // It converts the fasthttp request to a serializable HTTPRequest, runs all plugin interceptors,
 // and applies any modifications back to the fasthttp context.
@@ -1107,9 +1128,12 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 		return func(ctx *fasthttp.RequestCtx) {
 			plugins := config.GetLoadedHTTPTransportPlugins()
 			required := lib.RequiredPhysicalSendPlugin()
-			if required != "" && !slices.ContainsFunc(plugins, func(plugin schemas.HTTPTransportPlugin) bool {
+			needsGuard := required != "" && !requiredGuardReadOnly(ctx)
+			if required != "" && (!slices.ContainsFunc(plugins, func(plugin schemas.HTTPTransportPlugin) bool {
 				return plugin.GetName() == required
-			}) {
+			}) || !slices.ContainsFunc(config.GetLoadedLLMPlugins(), func(plugin schemas.LLMPlugin) bool {
+				return plugin.GetName() == required
+			})) {
 				SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send plugin is unavailable")
 				return
 			}
@@ -1132,6 +1156,11 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// Run plugin interceptors
 			for _, plugin := range plugins {
 				pluginName := plugin.GetName()
+				// Only the named plugin may install the required authorizer.
+				if needsGuard && pluginName == required && bifrostCtx.PhysicalSendGuardRequired() {
+					SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send guard was installed before the required plugin")
+					return
+				}
 				pluginCtx := bifrostCtx.WithPluginScope(&pluginName)
 				st, sh := startTransportPluginSpan(ctx, pluginName, "transportprehook")
 				resp, err := plugin.HTTPTransportPreHook(pluginCtx, req)
@@ -1169,7 +1198,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			// Catalog and health reads do not create model generations.
 			// All other requests must carry an installed physical-send guard.
-			if required != "" && !ctx.IsGet() && !ctx.IsHead() {
+			if needsGuard || (required != "" && !requiredGuardReadOnly(ctx)) {
 				guard, ok := bifrostCtx.PhysicalSendGuard()
 				if !ok || guard.Authorize == nil {
 					SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send guard is unavailable")
