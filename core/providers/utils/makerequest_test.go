@@ -1612,3 +1612,23 @@ func BenchmarkTransport_Buffered_PhysicalSendGuard(b *testing.B) {
 		}
 	}
 }
+
+// TestOperationErrorPreservesPhysicalSendDenial covers the constructor used by
+// native OpenAI passthrough streaming after the final-send guard refuses.
+func TestOperationErrorPreservesPhysicalSendDenial(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusServiceUnavailable} {
+		cause := NewPhysicalSendAuthorizationError(status, "POLICY_DENIED", nil)
+		got := NewBifrostOperationError("provider request failed", fmt.Errorf("wrapped: %w", cause))
+		if !got.IsBifrostError || got.StatusCode == nil || *got.StatusCode != status ||
+			got.Type == nil || *got.Type != "POLICY_DENIED" ||
+			got.Error == nil || got.Error.Type == nil || *got.Error.Type != "POLICY_DENIED" ||
+			got.AllowFallbacks == nil || *got.AllowFallbacks ||
+			!errors.Is(got.Error.Error, ErrPhysicalSendAuthorization) {
+			t.Fatalf("physical refusal lost status, reason, or no-fallback binding: %+v", got)
+		}
+	}
+	ordinary := NewBifrostOperationError("ordinary conversion failure", errors.New("fixture"))
+	if !ordinary.IsBifrostError || ordinary.StatusCode != nil || ordinary.Error.Message != "ordinary conversion failure" {
+		t.Fatalf("ordinary operation failure changed: %+v", ordinary)
+	}
+}
