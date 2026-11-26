@@ -55,6 +55,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -3906,6 +3907,17 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
+	// Reuse the native caller-token forwarding decision. Subscription-only
+	// deployments must not fall back to a stored provider key when the caller
+	// token is absent or does not match the existing ChatGPT issuer check.
+	// ChatGPT, not this gateway, still validates the token and entitlement.
+	if cfg.UpstreamURL == chatGPTUpstreamURL && os.Getenv("BIFROST_CHATGPT_PASSTHROUGH_SUBSCRIPTION_ONLY") == "true" {
+		if skip, _ := bifrostCtx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip || safeHeaders["authorization"] != callerAuth || callerAuth == "" {
+			defer cancel()
+			g.sendError(ctx, bifrostCtx, passthroughErr, newBifrostErrorWithCode(nil, "ChatGPT subscription bearer required; stored-key fallback is disabled", fasthttp.StatusUnauthorized))
+			return
+		}
+	}
 	if cfg.ModelFreePath != nil && cfg.ModelFreePath(string(ctx.Method()), path) {
 		bifrostCtx.SetValue(schemas.BifrostContextKeySkipModelCheck, true)
 	}
