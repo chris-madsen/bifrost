@@ -4633,6 +4633,25 @@ func TestTransportInterceptorRequiredGuardReadOnlyRoutes(t *testing.T) {
 	}
 }
 
+func TestTransportInterceptorRequiredGuardRejectsUpgradedRead(t *testing.T) {
+	t.Setenv("BIFROST_REQUIRED_PHYSICAL_SEND_PLUGIN", "body-plugin")
+	config := preAuthTestConfig(&physicalSendStatePlugin{}, &fakeBodyPlugin{
+		pre: func(req *schemas.HTTPRequest) {
+			req.Headers["Upgrade"] = "websocket"
+			req.Headers["Connection"] = "Upgrade"
+		},
+	})
+	ctx := preAuthTestCtx()
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/v1/models")
+	TransportInterceptorMiddleware(config)(func(*fasthttp.RequestCtx) {
+		t.Fatal("read-only exemption allowed a later upgrade using another plugin's guard")
+	})(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+		t.Fatal("upgraded read did not fail closed")
+	}
+}
+
 func TestTransportInterceptorRequiredGuardLLMRemoval(t *testing.T) {
 	t.Setenv("BIFROST_REQUIRED_PHYSICAL_SEND_PLUGIN", "physical-send-state-plugin")
 	config := preAuthTestConfig(&physicalSendStatePlugin{})

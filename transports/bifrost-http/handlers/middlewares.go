@@ -1196,9 +1196,15 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
 			}
-			// Catalog and health reads do not create model generations.
-			// All other requests must carry an installed physical-send guard.
-			if needsGuard || (required != "" && !requiredGuardReadOnly(ctx)) {
+			// The original read-only exception cannot be upgraded by a later
+			// transport hook. In that case we did not prove guard ownership at
+			// the required plugin boundary, even if another guard is present.
+			if required != "" && !needsGuard && !requiredGuardReadOnly(ctx) {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send guard was not verified for upgraded read")
+				_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
+				return
+			}
+			if needsGuard {
 				guard, ok := bifrostCtx.PhysicalSendGuard()
 				if !ok || guard.Authorize == nil {
 					SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send guard is unavailable")
