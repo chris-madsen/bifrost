@@ -2384,9 +2384,37 @@ func (*codexPassthroughReceipt) PostLLMHook(_ *schemas.BifrostContext, resp *sch
 	return resp, err, nil
 }
 
+// A nil Core client makes reaching provider dispatch a test failure. The
+// existing upstream bearer-forwarding rule, not an additional OAuth checker,
+// is the authority for the optional subscription-only mode.
+func TestChatGPTPassthroughSubscriptionOnlyRejectsNonCallerBearer(t *testing.T) {
+	t.Setenv("BIFROST_CHATGPT_PASSTHROUGH_SUBSCRIPTION_ONLY", "true")
+	for _, route := range []struct{ method, path, body string }{
+		{fasthttp.MethodPost, "/chatgpt_passthrough/backend-api/codex/responses", `{"model":"gpt-5.5","input":[],"store":false}`},
+		{fasthttp.MethodGet, "/chatgpt_passthrough/backend-api/codex/models", ""},
+	} {
+		for _, auth := range []string{"", "Bearer synthetic-api-key", "Bearer malformed"} {
+			r := router.New()
+			NewChatGPTPassthroughRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(route.method)
+			ctx.Request.SetRequestURI(route.path)
+			ctx.Request.Header.SetContentType("application/json")
+			if auth != "" {
+				ctx.Request.Header.Set("Authorization", auth)
+			}
+			ctx.Request.SetBodyString(route.body)
+			r.Handler(&ctx)
+			require.Equal(t, fasthttp.StatusUnauthorized, ctx.Response.StatusCode())
+			require.Contains(t, string(ctx.Response.Body()), "stored-key fallback is disabled")
+		}
+	}
+}
+
 // TestChatGPTPassthroughStreamsWithoutBodyFlag reproduces a server buffering a Codex WebSocket bridge's native response when stream is omitted.
 // The reported logs contain no raw body: these requests and the policy denial are synthetic, not captured production payloads.
 func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
+	t.Setenv("BIFROST_CHATGPT_PASSTHROUGH_SUBSCRIPTION_ONLY", "true")
 	for _, flag := range []string{"", `,"stream":true`, `,"stream":false`} {
 		t.Run(flag, func(t *testing.T) {
 			plugin := &codexPassthroughReceipt{}
@@ -2421,6 +2449,7 @@ func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
 // TestChatGPTPassthroughForwardsCodexModelList covers Codex fetching its model list through the gateway
 // with ChatGPT sign-in: the caller's ChatGPT token goes upstream, the gateway credential does not.
 func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
+	t.Setenv("BIFROST_CHATGPT_PASSTHROUGH_SUBSCRIPTION_ONLY", "true")
 	plugin := &codexPassthroughReceipt{}
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
 	require.NoError(t, err)
