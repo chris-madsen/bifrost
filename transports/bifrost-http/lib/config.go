@@ -8938,6 +8938,11 @@ func (c *Config) GetPluginOrder() []string {
 	return names
 }
 
+// RequiredPhysicalSendPlugin names the opt-in request authorization plugin.
+func RequiredPhysicalSendPlugin() string {
+	return strings.TrimSpace(os.Getenv("BIFROST_REQUIRED_PHYSICAL_SEND_PLUGIN"))
+}
+
 func (c *Config) GetLoadedLLMPlugins() []schemas.LLMPlugin {
 	if plugins := c.LLMPlugins.Load(); plugins != nil {
 		return slices.Clone(*plugins)
