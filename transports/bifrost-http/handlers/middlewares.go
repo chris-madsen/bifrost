@@ -1077,14 +1077,6 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
 				}
-				if needsGuard && pluginName == required {
-					guard, ok := bifrostCtx.PhysicalSendGuard()
-					if !ok || guard.Authorize == nil {
-						SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send plugin did not install its guard")
-						_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
-						return
-					}
-				}
 				// If we got here, the plugin may have modified req in-place
 			}
 			// Drain pre-auth plugin logs and store on fasthttp context for trace attachment
@@ -1180,6 +1172,14 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 					applyHTTPResponseToCtx(ctx, resp)
 					_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
 					return
+				}
+				if needsGuard && pluginName == required {
+					guard, ok := bifrostCtx.PhysicalSendGuard()
+					if !ok || guard.Authorize == nil {
+						SendError(ctx, fasthttp.StatusServiceUnavailable, "required physical-send plugin did not install its guard")
+						_ = runTransportResponseHeadersHooks(ctx, plugins, bifrostCtx, req)
+						return
+					}
 				}
 				// If we got here, the plugin may have modified req in-place
 			}
