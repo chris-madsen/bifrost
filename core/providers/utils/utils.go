@@ -3553,6 +3553,12 @@ func NewConfigurationError(message string) *schemas.BifrostError {
 // NewBifrostOperationError creates a standardized error for bifrost operation errors.
 // This helper reduces code duplication across providers that have bifrost operation errors.
 func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
+	// Streaming passthrough uses this constructor after DoStreamingRequest.
+	// Preserve the same non-retryable policy refusal as non-streaming requests.
+	var physicalSendError *PhysicalSendAuthorizationError
+	if errors.As(err, &physicalSendError) {
+		return NewBifrostUpstreamConnectionError(message, err)
+	}
 	return &schemas.BifrostError{
 		IsBifrostError: true,
 		Error: &schemas.ErrorField{
